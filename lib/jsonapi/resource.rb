@@ -7,7 +7,6 @@ module JSONAPI
     @@resource_types = {}
 
     attr_reader :context
-    attr_reader :model
 
     define_jsonapi_resources_callbacks :create,
                                        :update,
@@ -27,8 +26,12 @@ module JSONAPI
       @context = context
     end
 
+    def _model
+      @model
+    end
+
     def id
-      model.public_send(self.class._primary_key)
+      _model.public_send(self.class._primary_key)
     end
 
     def is_new?
@@ -112,7 +115,7 @@ module JSONAPI
     # Override this on a resource to customize how the associated records
     # are fetched for a model. Particularly helpful for authorization.
     def records_for(relation_name)
-      model.public_send relation_name
+      _model.public_send relation_name
     end
 
     private
@@ -142,7 +145,7 @@ module JSONAPI
       end
 
       if defined? @model.save
-        saved = @model.save
+        saved = @model.save(validate: false)
         fail JSONAPI::Exceptions::SaveFailed.new unless saved
       else
         saved = true
@@ -154,8 +157,9 @@ module JSONAPI
     end
 
     def _remove
-      @model.destroy
-
+      unless @model.destroy
+        fail JSONAPI::Exceptions::ValidationErrors.new(self)
+      end
       :completed
     end
 
@@ -169,7 +173,7 @@ module JSONAPI
         # TODO: Add option to skip relations that already exist instead of returning an error?
         relation = @model.public_send(relation_name).where(relationship.primary_key => relationship_key_value).first
         if relation.nil?
-          @model.public_send(relation_name) << related_resource.model
+          @model.public_send(relation_name) << related_resource._model
         else
           fail JSONAPI::Exceptions::HasManyRelationExists.new(relationship_key_value)
         end
@@ -198,8 +202,8 @@ module JSONAPI
     def _replace_polymorphic_to_one_link(relationship_type, key_value, key_type)
       relationship = self.class._relationships[relationship_type.to_sym]
 
-      model.public_send("#{relationship.foreign_key}=", key_value)
-      model.public_send("#{relationship.polymorphic_type}=", key_type.to_s.classify)
+      _model.public_send("#{relationship.foreign_key}=", key_value)
+      _model.public_send("#{relationship.polymorphic_type}=", key_type.to_s.classify)
 
       @save_needed = true
 
@@ -258,6 +262,7 @@ module JSONAPI
     class << self
       def inherited(base)
         base.abstract(false)
+        base.immutable(false)
         base._attributes = (_attributes || {}).dup
         base._relationships = (_relationships || {}).dup
         base._allowed_filters = (_allowed_filters || Set.new).dup
@@ -506,7 +511,7 @@ module JSONAPI
 
         resources = []
         records.each do |model|
-          resources.push new(model, context)
+          resources.push resource_for(resource_type_for(model)).new(model, context)
         end
 
         resources
@@ -518,7 +523,11 @@ module JSONAPI
         records = apply_includes(records, options)
         model = records.where({_primary_key => key}).first
         fail JSONAPI::Exceptions::RecordNotFound.new(key) if model.nil?
-        new(model, context)
+        resource_for(resource_type_for(model)).new(model, context)
+      end
+
+      def resource_type_for(model)
+        self.module_path + model.class.to_s.underscore
       end
 
       # Override this method if you want to customize the relation for
@@ -561,40 +570,28 @@ module JSONAPI
 
       def verify_key(key, context = nil)
         key_type = resource_key_type
-        verification_proc = case key_type
 
+        case key_type
         when :integer
-          -> (key, context) {
-            begin
-              return key if key.nil?
-              Integer(key)
-            rescue
-              raise JSONAPI::Exceptions::InvalidFieldValue.new(:id, key)
-            end
-          }
+          return if key.nil?
+          Integer(key)
         when :string
-          -> (key, context) {
-            return key if key.nil?
-            if key.to_s.include?(',')
-              raise JSONAPI::Exceptions::InvalidFieldValue.new(:id, key)
-            else
-              key
-            end
-          }
+          return if key.nil?
+          if key.to_s.include?(',')
+            raise JSONAPI::Exceptions::InvalidFieldValue.new(:id, key)
+          else
+            key
+          end
         when :uuid
-          -> (key, context) {
-            return key if key.nil?
-            if key.to_s.match(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
-              key
-            else
-              raise JSONAPI::Exceptions::InvalidFieldValue.new(:id, key)
-            end
-          }
+          return if key.nil?
+          if key.to_s.match(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/)
+            key
+          else
+            raise JSONAPI::Exceptions::InvalidFieldValue.new(:id, key)
+          end
         else
-          key_type
+          key_type.call(key, context)
         end
-
-        verification_proc.call(key, context)
       rescue
         raise JSONAPI::Exceptions::InvalidFieldValue.new(:id, key)
       end
@@ -671,6 +668,18 @@ module JSONAPI
         @abstract
       end
 
+      def immutable(val = true)
+        @immutable = val
+      end
+
+      def _immutable
+        @immutable
+      end
+
+      def mutable?
+        !@immutable
+      end
+
       def _model_class
         return nil if _abstract
 
@@ -685,7 +694,7 @@ module JSONAPI
       end
 
       def module_path
-        @module_path ||= name =~ /::[^:]+\Z/ ? ($`.freeze.gsub('::', '/') + '/').underscore : ''
+        name =~ /::[^:]+\Z/ ? ($`.freeze.gsub('::', '/') + '/').underscore : ''
       end
 
       def construct_order_options(sort_params)
@@ -709,13 +718,13 @@ module JSONAPI
       def check_reserved_attribute_name(name)
         # Allow :id since it can be used to specify the format. Since it is a method on the base Resource
         # an attribute method won't be created for it.
-        if [:type, :href, :links, :model].include?(name.to_sym)
+        if [:type].include?(name.to_sym)
           warn "[NAME COLLISION] `#{name}` is a reserved key in #{@@resource_types[_type]}."
         end
       end
 
       def check_reserved_relationship_name(name)
-        if [:id, :ids, :type, :types, :href, :hrefs, :link, :links].include?(name.to_sym)
+        if [:id, :ids, :type, :types].include?(name.to_sym)
           warn "[NAME COLLISION] `#{name}` is a reserved relationship name in #{@@resource_types[_type]}."
         end
       end
@@ -762,7 +771,7 @@ module JSONAPI
               define_method attr do |options = {}|
                 if relationship.polymorphic?
                   associated_model = public_send(associated_records_method_name)
-                  resource_klass = Resource.resource_for(self.class.module_path + associated_model.class.to_s.underscore) if associated_model
+                  resource_klass = Resource.resource_for(self.class.resource_type_for(associated_model)) if associated_model
                   return resource_klass.new(associated_model, @context) if resource_klass
                 else
                   resource_klass = relationship.resource_klass
@@ -815,9 +824,7 @@ module JSONAPI
               end
 
               return records.collect do |record|
-                if relationship.polymorphic?
-                  resource_klass = Resource.resource_for(self.class.module_path + record.class.to_s.underscore)
-                end
+                resource_klass = Resource.resource_for(self.class.resource_type_for(record))
                 resource_klass.new(record, @context)
               end
             end unless method_defined?(attr)

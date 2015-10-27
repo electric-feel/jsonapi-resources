@@ -106,6 +106,50 @@ class ContactResource < BaseResource
 end
 ```
 
+##### Immutable Resources
+
+Resources that are immutable should be declared as such with the `immutable` method. Immutable resources will only
+generate routes for `index`, `show` and `show_relationship`.
+
+###### Immutable for Readonly
+
+Some resources are read-only and are not to be modified through the API. Declaring a resource as immutable prevents 
+creation of routes that allow modification of the resource.
+
+###### Immutable Heterogeneous Collections
+
+Immutable resources can be used as the basis for a heterogeneous collection. Resources in heterogeneous collections can
+still be mutated through their own type-specific endpoints.
+
+```ruby
+class VehicleResource < JSONAPI::Resource
+  immutable
+
+  has_one :owner
+  attributes :make, :model, :serial_number
+end
+
+class CarResource < VehicleResource
+  attributes :drive_layout
+  has_one :driver
+end
+
+class BoatResource < VehicleResource
+  attributes :length_at_water_line
+  has_one :captain
+end
+
+# routes
+  jsonapi_resources :vehicles
+  jsonapi_resources :cars
+  jsonapi_resources :boats
+
+```
+
+In the above example vehicles are immutable. A call to `/vehicles` or `/vehicles/1` will return vehicles with types
+of either `car` or `boat`. But calls to PUT or POST a `car` must be made to `/cars`. The rails models backing the above
+code use Single Table Inheritance.
+
 #### Attributes
 
 Any of a resource's attributes that are accessible must be explicitly declared. Single attributes can be declared using
@@ -543,7 +587,7 @@ section for additional details on raising errors.
 class BaseResource < JSONAPI::Resource
   def records_for(relation_name)
     context = options[:context]
-    records = model.public_send(relation_name)
+    records = _model.public_send(relation_name)
 
     unless context[:current_user].can_view?(records)
       raise NotAuthorizedError
@@ -806,12 +850,12 @@ Callbacks can be defined for the following `JSONAPI::Resource` events:
 - `:update`
 - `:remove`
 - `:save`
-- `:create_has_many_link`
-- `:replace_has_many_links`
-- `:create_has_one_link`
-- `:replace_has_one_link`
-- `:remove_has_many_link`
-- `:remove_has_one_link`
+- `:create_to_many_link`
+- `:replace_to_many_links`
+- `:create_to_one_link`
+- `:replace_to_one_link`
+- `:remove_to_many_link`
+- `:remove_to_one_link`
 - `:replace_fields`
 
 ##### `JSONAPI::OperationsProcessor` Callbacks
@@ -827,11 +871,11 @@ Callbacks can also be defined for `JSONAPI::OperationsProcessor` events:
 - `:create_resource_operation`: A `create_resource_operation`.
 - `:remove_resource_operation`: A `remove_resource_operation`.
 - `:replace_fields_operation`: A `replace_fields_operation`.
-- `:replace_has_one_relationship_operation`: A `replace_has_one_relationship_operation`.
-- `:create_has_many_relationship_operation`: A `create_has_many_relationship_operation`.
-- `:replace_has_many_relationship_operation`: A `replace_has_many_relationship_operation`.
-- `:remove_has_many_relationship_operation`: A `remove_has_many_relationship_operation`.
-- `:remove_has_one_relationship_operation`: A `remove_has_one_relationship_operation`.
+- `:replace_to_one_relationship_operation`: A `replace_to_one_relationship_operation`.
+- `:create_to_many_relationship_operation`: A `create_to_many_relationship_operation`.
+- `:replace_to_many_relationship_operation`: A `replace_to_many_relationship_operation`.
+- `:remove_to_many_relationship_operation`: A `remove_to_many_relationship_operation`.
+- `:remove_to_one_relationship_operation`: A `remove_to_one_relationship_operation`.
 
 The operation callbacks have access to two meta data hashes, `@operations_meta` and `@operation_meta`, two links hashes,
 `@operations_links` and `@operation_links`, the full list of `@operations`, each individual `@operation` and the
