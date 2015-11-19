@@ -8,6 +8,21 @@ class ArticleResource < JSONAPI::Resource
   end
 end
 
+class PostWithBadAfterSave < ActiveRecord::Base
+  self.table_name = 'posts'
+  after_save :do_some_after_save_stuff
+
+  def do_some_after_save_stuff
+    errors[:base] << 'Boom! Error added in after_save callback.'
+    raise ActiveRecord::RecordInvalid.new(self)
+  end
+end
+
+class ArticleWithBadAfterSaveResource < JSONAPI::Resource
+  model_name 'PostWithBadAfterSave'
+  attribute :title
+end
+
 class NoMatchResource < JSONAPI::Resource
 end
 
@@ -16,7 +31,6 @@ class NoMatchAbstractResource < JSONAPI::Resource
 end
 
 class CatResource < JSONAPI::Resource
-  attribute :id
   attribute :name
   attribute :breed
 
@@ -111,7 +125,7 @@ class ResourceTest < ActiveSupport::TestCase
 
   def test_find_with_customized_base_records
     author = Person.find(1)
-    posts = ArticleResource.find([], context: author).map(&:model)
+    posts = ArticleResource.find([], context: author).map(&:_model)
 
     assert(posts.include?(Post.find(1)))
     refute(posts.include?(Post.find(3)))
@@ -123,10 +137,10 @@ class ResourceTest < ActiveSupport::TestCase
     refute(preferences == nil)
     author.update! preferences: preferences
     author_resource = PersonResource.new(author, nil)
-    assert_equal(author_resource.preferences.model, preferences)
+    assert_equal(author_resource.preferences._model, preferences)
 
     author_resource = PersonWithCustomRecordsForResource.new(author, nil)
-    assert_equal(author_resource.preferences.model, :records_for)
+    assert_equal(author_resource.preferences._model, :records_for)
 
     author_resource = PersonWithCustomRecordsForErrorResource.new(author, nil)
     assert_raises PersonWithCustomRecordsForErrorResource::AuthorizationError do
@@ -165,11 +179,11 @@ class ResourceTest < ActiveSupport::TestCase
   def test_find_by_key_with_customized_base_records
     author = Person.find(1)
 
-    post = ArticleResource.find_by_key(1, context: author).model
+    post = ArticleResource.find_by_key(1, context: author)._model
     assert_equal(post, Post.find(1))
 
     assert_raises JSONAPI::Exceptions::RecordNotFound do
-      ArticleResource.find_by_key(3, context: author).model
+      ArticleResource.find_by_key(3, context: author)._model
     end
   end
 
@@ -221,7 +235,7 @@ class ResourceTest < ActiveSupport::TestCase
 
   def test_to_many_relationship_sorts
     post_resource = PostResource.new(Post.find(1), nil)
-    comment_ids = post_resource.comments.map{|c| c.model.id }
+    comment_ids = post_resource.comments.map{|c| c._model.id }
     assert_equal [1,2], comment_ids
 
     # define apply_filters method on post resource to not respect filters
@@ -233,7 +247,7 @@ class ResourceTest < ActiveSupport::TestCase
       end
     end
 
-    sorted_comment_ids = post_resource.comments(sort_criteria: [{ field: 'id', direction: :desc}]).map{|c| c.model.id }
+    sorted_comment_ids = post_resource.comments(sort_criteria: [{ field: 'id', direction: :desc}]).map{|c| c._model.id }
     assert_equal [2,1], sorted_comment_ids
 
   ensure
@@ -361,5 +375,100 @@ class ResourceTest < ActiveSupport::TestCase
     CatResource.instance_eval do
       key_type nil
     end
+  end
+
+  def test_id_attr_deprecation
+    _out, err = capture_io do
+      eval <<-CODE
+        class ProblemResource < JSONAPI::Resource
+          attribute :id
+        end
+      CODE
+    end
+    assert_match /DEPRECATION WARNING: Id without format is no longer supported. Please remove ids from attributes, or specify a format./, err
+  end
+
+  def test_id_attr_with_format
+    _out, err = capture_io do
+      eval <<-CODE
+        class NotProblemResource < JSONAPI::Resource
+          attribute :id, format: :string
+        end
+      CODE
+    end
+    assert_equal "", err
+  end
+
+  def test_links_resource_warning
+    _out, err = capture_io do
+      eval "class LinksResource < JSONAPI::Resource; end"
+    end
+    assert_match /LinksResource` is a reserved resource name/, err
+  end
+
+  def test_reserved_key_warnings
+    _out, err = capture_io do
+      eval <<-CODE
+        class BadlyNamedAttributesResource < JSONAPI::Resource
+          attributes :type
+        end
+      CODE
+    end
+    assert_match /`type` is a reserved key in ./, err
+  end
+
+  def test_reserved_relationship_warnings
+    %w(id type).each do |key|
+      _out, err = capture_io do
+        eval <<-CODE
+          class BadlyNamedAttributesResource < JSONAPI::Resource
+            has_one :#{key}
+          end
+        CODE
+      end
+      assert_match /`#{key}` is a reserved relationship name in ./, err
+    end
+    %w(types ids).each do |key|
+      _out, err = capture_io do
+        eval <<-CODE
+          class BadlyNamedAttributesResource < JSONAPI::Resource
+            has_many :#{key}
+          end
+        CODE
+      end
+      assert_match /`#{key}` is a reserved relationship name in ./, err
+    end
+  end
+
+  def test_abstract_warning
+    _out, err = capture_io do
+      eval <<-CODE
+        class NoModelResource < JSONAPI::Resource
+        end
+        NoModelResource._model_class
+      CODE
+    end
+    assert_match "[MODEL NOT FOUND] Model could not be found for ResourceTest::NoModelResource. If this a base Resource declare it as abstract.\n", err
+  end
+
+  def test_no_warning_when_abstract
+    _out, err = capture_io do
+      eval <<-CODE
+        class NoModelAbstractResource < JSONAPI::Resource
+          abstract
+        end
+        NoModelAbstractResource._model_class
+      CODE
+    end
+    assert_match "", err
+  end
+
+  def test_correct_error_surfaced_if_validation_errors_in_after_save_callback
+    post = PostWithBadAfterSave.find(1)
+    post_resource = ArticleWithBadAfterSaveResource.new(post, nil)
+    err = assert_raises JSONAPI::Exceptions::ValidationErrors do
+      post_resource.replace_fields({:attributes => {:title => 'Some title'}})
+    end
+    assert_equal(err.error_messages[:base], ['Boom! Error added in after_save callback.'])
   end
 end

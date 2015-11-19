@@ -37,7 +37,7 @@ class PostsControllerTest < ActionController::TestCase
     JSONAPI.configuration.exception_class_whitelist = []
 
     @controller.class.instance_variable_set(:@callback_message, "none")
-    @controller.class.on_server_error do
+    BaseController.on_server_error do
       @controller.class.instance_variable_set(:@callback_message, "Sent from block")
     end
 
@@ -2271,12 +2271,89 @@ class Api::V5::AuthorsControllerTest < ActionController::TestCase
     assert_equal nil, json_response['data'][0]['attributes']['email']
   end
 
+  def test_show_person_as_author
+    get :show, {id: '1'}
+    assert_response :success
+    assert_equal '1', json_response['data']['id']
+    assert_equal 'authors', json_response['data']['type']
+    assert_equal 'Joe Author', json_response['data']['attributes']['name']
+    assert_equal nil, json_response['data']['attributes']['email']
+  end
+
   def test_get_person_as_author_by_name_filter
     get :index, {filter: {name: 'thor'}}
     assert_response :success
     assert_equal 3, json_response['data'].size
     assert_equal '1', json_response['data'][0]['id']
     assert_equal 'Joe Author', json_response['data'][0]['attributes']['name']
+  end
+
+  def test_meta_serializer_options
+    JSONAPI.configuration.json_key_format = :camelized_key
+
+    Api::V5::AuthorResource.class_eval do
+      def meta(options)
+        {
+          fixed: 'Hardcoded value',
+          computed: "#{self.class._type.to_s}: #{options[:serializer].url_generator.self_link(self)}",
+          computed_foo: options[:serialization_options][:foo],
+          options[:serializer].format_key('test_key') => 'test value'
+        }
+      end
+    end
+
+    get :show, {id: '1'}
+    assert_response :success
+    assert_equal '1', json_response['data']['id']
+    assert_equal 'Hardcoded value', json_response['data']['meta']['fixed']
+    assert_equal 'authors: http://test.host/api/v5/authors/1', json_response['data']['meta']['computed']
+    assert_equal 'bar', json_response['data']['meta']['computed_foo']
+    assert_equal 'test value', json_response['data']['meta']['testKey']
+
+  ensure
+    JSONAPI.configuration.json_key_format = :dasherized_key
+    Api::V5::AuthorResource.class_eval do
+      def meta(options)
+        # :nocov:
+        { }
+        # :nocov:
+      end
+    end
+  end
+
+  def test_meta_serializer_hash_data
+    JSONAPI.configuration.json_key_format = :camelized_key
+
+    Api::V5::AuthorResource.class_eval do
+      def meta(options)
+        {
+          custom_hash: {
+            fixed: 'Hardcoded value',
+            computed: "#{self.class._type.to_s}: #{options[:serializer].url_generator.self_link(self)}",
+            computed_foo: options[:serialization_options][:foo],
+            options[:serializer].format_key('test_key') => 'test value'
+          }
+        }
+      end
+    end
+
+    get :show, {id: '1'}
+    assert_response :success
+    assert_equal '1', json_response['data']['id']
+    assert_equal 'Hardcoded value', json_response['data']['meta']['custom_hash']['fixed']
+    assert_equal 'authors: http://test.host/api/v5/authors/1', json_response['data']['meta']['custom_hash']['computed']
+    assert_equal 'bar', json_response['data']['meta']['custom_hash']['computed_foo']
+    assert_equal 'test value', json_response['data']['meta']['custom_hash']['testKey']
+
+  ensure
+    JSONAPI.configuration.json_key_format = :dasherized_key
+    Api::V5::AuthorResource.class_eval do
+      def meta(options)
+        # :nocov:
+        { }
+        # :nocov:
+      end
+    end
   end
 end
 
@@ -3076,15 +3153,15 @@ class Api::V1::CratersControllerTest < ActionController::TestCase
                         data: [
                           {id:"A4D3",
                            type:"craters",
-                           links:{self: "http://test.host/craters/A4D3"},
+                           links:{self: "http://test.host/api/v1/craters/A4D3"},
                            attributes:{code: "A4D3", description: "Small crater"},
-                           relationships:{moon: {links: {self: "http://test.host/craters/A4D3/relationships/moon", related: "http://test.host/craters/A4D3/moon"}}}
+                           relationships:{moon: {links: {self: "http://test.host/api/v1/craters/A4D3/relationships/moon", related: "http://test.host/api/v1/craters/A4D3/moon"}}}
                           },
                           {id: "S56D",
                            type: "craters",
-                           links:{self: "http://test.host/craters/S56D"},
+                           links:{self: "http://test.host/api/v1/craters/S56D"},
                            attributes:{code: "S56D", description: "Very large crater"},
-                           relationships:{moon: {links: {self: "http://test.host/craters/S56D/relationships/moon", related: "http://test.host/craters/S56D/moon"}}}
+                           relationships:{moon: {links: {self: "http://test.host/api/v1/craters/S56D/relationships/moon", related: "http://test.host/api/v1/craters/S56D/moon"}}}
                           }
                         ]
                       }
@@ -3096,5 +3173,73 @@ class Api::V1::CratersControllerTest < ActionController::TestCase
     assert_response :success
     assert_equal "moons", json_response['data']['type']
     assert_equal "1", json_response['data']['id']
+  end
+end
+
+class CarsControllerTest < ActionController::TestCase
+  def setup
+    JSONAPI.configuration.json_key_format = :camelized_key
+  end
+
+  def test_create_sti
+    set_content_type_header!
+    post :create,
+         {
+           data: {
+             type: 'cars',
+             attributes: {
+               make: 'Toyota',
+               model: 'Tercel',
+               serialNumber: 'asasdsdadsa13544235',
+               driveLayout: 'FWD'
+             }
+           }
+         }
+
+    assert_response :created
+    assert json_response['data'].is_a?(Hash)
+    assert_equal 'cars', json_response['data']['type']
+    assert_equal 'Toyota', json_response['data']['attributes']['make']
+    assert_equal 'FWD', json_response['data']['attributes']['driveLayout']
+  end
+end
+
+class VehiclesControllerTest < ActionController::TestCase
+  def setup
+    JSONAPI.configuration.json_key_format = :camelized_key
+  end
+
+  def test_immutable_create_not_supported
+    set_content_type_header!
+
+    assert_raises ActionController::UrlGenerationError do
+      post :create,
+           {
+             data: {
+               type: 'cars',
+               attributes: {
+                 make: 'Toyota',
+                 model: 'Corrola',
+                 serialNumber: 'dsvffsfv',
+                 driveLayout: 'FWD'
+               }
+             }
+           }
+    end
+  end
+
+  def test_immutable_update_not_supported
+    set_content_type_header!
+
+    assert_raises ActionController::UrlGenerationError do
+      patch :update,
+            data: {
+              id: '1',
+              type: 'cars',
+              attributes: {
+                make: 'Toyota',
+              }
+            }
+    end
   end
 end

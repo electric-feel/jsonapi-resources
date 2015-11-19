@@ -214,12 +214,34 @@ ActiveRecord::Schema.define do
   create_table :vehicles, force: true do |t|
     t.string :type
     t.string :make
-    t.string :vehicle_model
+    t.string :model
     t.string :length_at_water_line
     t.string :drive_layout
     t.string :serial_number
     t.integer :person_id
   end
+
+  create_table :makes, force: true do |t|
+    t.string :model
+  end
+
+  # special cases - fields that look like they should be reserved names
+  create_table :hrefs, force: true do |t|
+    t.string :name
+  end
+
+  create_table :links, force: true do |t|
+    t.string :name
+  end
+
+  create_table :web_pages, force: true do |t|
+    t.string :href
+    t.string :link
+  end
+
+  create_table :questionables, force: true do |t|
+  end
+  # special cases
 end
 
 ### MODELS
@@ -474,6 +496,12 @@ class Product < ActiveRecord::Base
   has_one :picture, as: :imageable
 end
 
+class Make < ActiveRecord::Base
+end
+
+class WebPage < ActiveRecord::Base
+end
+
 ### OperationsProcessor
 class CountingActiveRecordOperationsProcessor < ActiveRecordOperationsProcessor
   after_find_operation do
@@ -502,8 +530,12 @@ end
 class PeopleController < JSONAPI::ResourceController
 end
 
-class PostsController < ActionController::Base
+class BaseController < ActionController::Base
   include JSONAPI::ActsAsResourceController
+end
+
+class PostsController < BaseController
+
   class SpecialError < StandardError; end
   class SubSpecialError < PostsController::SpecialError; end
 
@@ -556,6 +588,15 @@ class ProductsController < JSONAPI::ResourceController
 end
 
 class ImageablesController < JSONAPI::ResourceController
+end
+
+class VehiclesController < JSONAPI::ResourceController
+end
+
+class CarsController < JSONAPI::ResourceController
+end
+
+class BoatsController < JSONAPI::ResourceController
 end
 
 ### CONTROLLERS
@@ -646,6 +687,9 @@ module Api
 
   module V5
     class AuthorsController < JSONAPI::ResourceController
+      def serialization_options
+        {foo: 'bar'}
+      end
     end
 
     class PostsController < JSONAPI::ResourceController
@@ -701,7 +745,7 @@ class BaseResource < JSONAPI::Resource
 end
 
 class PersonResource < BaseResource
-  attributes :id, :name, :email
+  attributes :name, :email
   attribute :date_joined, format: :date_with_timezone
 
   has_many :comments
@@ -727,8 +771,10 @@ class PersonResource < BaseResource
 end
 
 class VehicleResource < JSONAPI::Resource
+  immutable
+
   has_one :person
-  attributes :make, :vehicle_model, :serial_number
+  attributes :make, :model, :serial_number
 end
 
 class CarResource < VehicleResource
@@ -761,12 +807,6 @@ class TagResource < JSONAPI::Resource
   has_many :posts
   # Not including the planets relationship so they don't get output
   #has_many :planets
-end
-
-class SpecialTagResource < JSONAPI::Resource
-  attributes :name
-
-  has_many :posts
 end
 
 class SectionResource < JSONAPI::Resource
@@ -893,7 +933,6 @@ class FriendResource < JSONAPI::Resource
 end
 
 class BreedResource < JSONAPI::Resource
-  attribute :id, format_misspelled: :does_not_exist
   attribute :name, format: :title
 
   # This is unneeded, just here for testing
@@ -1003,11 +1042,20 @@ class ProductResource < JSONAPI::Resource
   has_one :picture, always_include_linkage_data: true
 
   def picture_id
-    model.picture.id
+    _model.picture.id
   end
 end
 
 class ImageableResource < JSONAPI::Resource
+end
+
+class MakeResource < JSONAPI::Resource
+  attribute :model
+end
+
+class WebPageResource < JSONAPI::Resource
+  attribute :href
+  attribute :link
 end
 
 module Api
@@ -1201,6 +1249,15 @@ module Api
 
       filter :name
 
+      def self.find_by_key(key, options = {})
+        context = options[:context]
+        records = records(options)
+        records = apply_includes(records, options)
+        model = records.where({_primary_key => key}).first
+        fail JSONAPI::Exceptions::RecordNotFound.new(key) if model.nil?
+        self.new(model, context)
+      end
+
       def self.find(filters, options = {})
         resources = []
 
@@ -1328,21 +1385,19 @@ module MyEngine
   end
 end
 
-warn 'start testing Name Collisions'
-# The name collisions only emmit warnings. Exceptions would change the flow of the tests
-
-class LinksResource < JSONAPI::Resource
+module Legacy
+  class FlatPost < ActiveRecord::Base
+    self.table_name = "posts"
+  end
 end
 
-class BadlyNamedAttributesResource < JSONAPI::Resource
-  attributes :type, :href, :links
-
-  has_many :links
-  has_one :href
-  has_one :id
-  has_many :types
+class FlatPostResource < JSONAPI::Resource
+  model_name "::Legacy::FlatPost"
+  attribute :title
 end
-warn 'end testing Name Collisions'
+
+class FlatPostsController < JSONAPI::ResourceController
+end
 
 ### PORO Data - don't do this in a production app
 $breed_data = BreedData.new

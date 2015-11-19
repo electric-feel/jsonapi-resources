@@ -1,4 +1,4 @@
-# JSONAPI::Resources [![Build Status](https://secure.travis-ci.org/cerebris/jsonapi-resources.png?branch=master)](http://travis-ci.org/cerebris/jsonapi-resources) [![Code Climate](https://codeclimate.com/github/cerebris/jsonapi-resources/badges/gpa.svg)](https://codeclimate.com/github/cerebris/jsonapi-resources)
+# JSONAPI::Resources [![Build Status](https://secure.travis-ci.org/cerebris/jsonapi-resources.svg?branch=master)](http://travis-ci.org/cerebris/jsonapi-resources) [![Code Climate](https://codeclimate.com/github/cerebris/jsonapi-resources/badges/gpa.svg)](https://codeclimate.com/github/cerebris/jsonapi-resources)
 
 [![Join the chat at https://gitter.im/cerebris/jsonapi-resources](https://badges.gitter.im/Join%20Chat.svg)](https://gitter.im/cerebris/jsonapi-resources?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
 
@@ -26,6 +26,7 @@ backed by ActiveRecord models or by custom objects.
     * [Filters] (#filters)
     * [Pagination] (#pagination)
     * [Included relationships (side-loading resources)] (#included-relationships-side-loading-resources)
+    * [Resource meta] (#resource-meta)
     * [Callbacks] (#callbacks)
   * [Controllers] (#controllers)
     * [Namespaces] (#namespaces)
@@ -106,6 +107,50 @@ class ContactResource < BaseResource
 end
 ```
 
+##### Immutable Resources
+
+Resources that are immutable should be declared as such with the `immutable` method. Immutable resources will only
+generate routes for `index`, `show` and `show_relationship`.
+
+###### Immutable for Readonly
+
+Some resources are read-only and are not to be modified through the API. Declaring a resource as immutable prevents 
+creation of routes that allow modification of the resource.
+
+###### Immutable Heterogeneous Collections
+
+Immutable resources can be used as the basis for a heterogeneous collection. Resources in heterogeneous collections can
+still be mutated through their own type-specific endpoints.
+
+```ruby
+class VehicleResource < JSONAPI::Resource
+  immutable
+
+  has_one :owner
+  attributes :make, :model, :serial_number
+end
+
+class CarResource < VehicleResource
+  attributes :drive_layout
+  has_one :driver
+end
+
+class BoatResource < VehicleResource
+  attributes :length_at_water_line
+  has_one :captain
+end
+
+# routes
+  jsonapi_resources :vehicles
+  jsonapi_resources :cars
+  jsonapi_resources :boats
+
+```
+
+In the above example vehicles are immutable. A call to `/vehicles` or `/vehicles/1` will return vehicles with types
+of either `car` or `boat`. But calls to PUT or POST a `car` must be made to `/cars`. The rails models backing the above
+code use Single Table Inheritance.
+
 #### Attributes
 
 Any of a resource's attributes that are accessible must be explicitly declared. Single attributes can be declared using
@@ -142,7 +187,7 @@ end
 ##### Fetchable Attributes
 
 By default all attributes are assumed to be fetchable. The list of fetchable attributes can be filtered by overriding
-the `fetchable_fields` method.
+the `self.fetchable_fields` method.
 
 Here's an example that prevents guest users from seeing the `email` field:
 
@@ -152,7 +197,7 @@ class AuthorResource < JSONAPI::Resource
   model_name 'Person'
   has_many :posts
 
-  def fetchable_fields
+  def self.fetchable_fields(context)
     if (context[:current_user].guest)
       super - [:email]
     else
@@ -353,7 +398,7 @@ posts:
 
 ```ruby
 class PostResource < JSONAPI::Resource
-  attribute :title, :body
+  attributes :title, :body
 
   relationship :author, to: :one
 end
@@ -373,7 +418,7 @@ And here's the equivalent resources using the `has_one` and `has_many` methods:
 
 ```ruby
 class PostResource < JSONAPI::Resource
-  attribute :title, :body
+  attributes :title, :body
 
   has_one :author
 end
@@ -506,7 +551,7 @@ For example to allow a user to only retrieve his own posts you can do the follow
 
 ```ruby
 class PostResource < JSONAPI::Resource
-  attribute :title, :body
+  attributes :title, :body
 
   def self.records(options = {})
     context = options[:context]
@@ -543,7 +588,7 @@ section for additional details on raising errors.
 class BaseResource < JSONAPI::Resource
   def records_for(relation_name)
     context = options[:context]
-    records = model.public_send(relation_name)
+    records = _model.public_send(relation_name)
 
     unless context[:current_user].can_view?(records)
       raise NotAuthorizedError
@@ -776,6 +821,33 @@ Will get you the following payload by default:
 }
 ```
 
+#### Resource Meta
+
+Meta information can be included for each resource using the meta method in the resource declaration. For example:
+
+```ruby
+class BookResource < JSONAPI::Resource
+  attribute :title
+  attribute :isbn
+
+  def meta(options)
+    {
+      copyright: 'API Copyright 2015 - XYZ Corp.',
+      computed_copyright: options[:serialization_options][:copyright]
+      last_updated_at: _model.updated_at
+    }
+   end
+end
+
+```
+
+The `meta` method will be called for each resource instance. Override the `meta` method on a resource class to control
+the meta information for the resource. If a non empty hash is returned from `meta` this will be serialized. The `meta` 
+method is called with an `options` has. The `options` hash will contain the following:
+
+ * `:serializer` -> the serializer instance
+ * `:serialization_options` -> the contents of the `serialization_options` method on the controller.
+
 #### Callbacks
 
 `ActiveSupport::Callbacks` is used to provide callback functionality, so the behavior is very similar to what you may be
@@ -806,12 +878,12 @@ Callbacks can be defined for the following `JSONAPI::Resource` events:
 - `:update`
 - `:remove`
 - `:save`
-- `:create_has_many_link`
-- `:replace_has_many_links`
-- `:create_has_one_link`
-- `:replace_has_one_link`
-- `:remove_has_many_link`
-- `:remove_has_one_link`
+- `:create_to_many_link`
+- `:replace_to_many_links`
+- `:create_to_one_link`
+- `:replace_to_one_link`
+- `:remove_to_many_link`
+- `:remove_to_one_link`
 - `:replace_fields`
 
 ##### `JSONAPI::OperationsProcessor` Callbacks
@@ -827,11 +899,11 @@ Callbacks can also be defined for `JSONAPI::OperationsProcessor` events:
 - `:create_resource_operation`: A `create_resource_operation`.
 - `:remove_resource_operation`: A `remove_resource_operation`.
 - `:replace_fields_operation`: A `replace_fields_operation`.
-- `:replace_has_one_relationship_operation`: A `replace_has_one_relationship_operation`.
-- `:create_has_many_relationship_operation`: A `create_has_many_relationship_operation`.
-- `:replace_has_many_relationship_operation`: A `replace_has_many_relationship_operation`.
-- `:remove_has_many_relationship_operation`: A `remove_has_many_relationship_operation`.
-- `:remove_has_one_relationship_operation`: A `remove_has_one_relationship_operation`.
+- `:replace_to_one_relationship_operation`: A `replace_to_one_relationship_operation`.
+- `:create_to_many_relationship_operation`: A `create_to_many_relationship_operation`.
+- `:replace_to_many_relationship_operation`: A `replace_to_many_relationship_operation`.
+- `:remove_to_many_relationship_operation`: A `remove_to_many_relationship_operation`.
+- `:remove_to_one_relationship_operation`: A `remove_to_one_relationship_operation`.
 
 The operation callbacks have access to two meta data hashes, `@operations_meta` and `@operation_meta`, two links hashes,
 `@operations_links` and `@operation_links`, the full list of `@operations`, each individual `@operation` and the
@@ -890,6 +962,9 @@ end
 
 Of course you are free to extend this as needed and override action handlers or other methods.
 
+
+###### Context
+
 The context that's used for serialization and resource configuration is set by the controller's `context` method.
 
 For example:
@@ -908,7 +983,21 @@ class PeopleController < ApplicationController
 end
 ```
 
-> __Note__: This gem [uses the filter chain to set up the request](https://github.com/cerebris/jsonapi-resources/issues/458#issuecomment-143297055). In some instances, variables that are set in the filter chain (such as `current_user`) may not be set at the right time. If this happens (i.e. `current_user` is `nil` in `context` but it's set properly everywhere else), you may want to have your authentication occur earlier in the filter chain, using `prepend_before_action` instead of `before_action`.
+###### Serialization Options
+
+Additional options can be passed to the serializer using the `serialization_options` method.
+
+For example:
+
+```ruby
+class ApplicationController < JSONAPI::ResourceController
+  def serialization_options
+    {copyright: 'Copyright 2015'}
+  end
+end
+```
+
+These `serialization_options` are passed to the `meta` method used to generate resource `meta` values.
 
 ##### ActsAsResourceController
 
